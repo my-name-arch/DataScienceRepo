@@ -1,0 +1,21 @@
+"0","map_stops %>% "
+"0","  summarise("
+"0","    avg = mean(delay_minutes, na.rm = TRUE),"
+"0","    sd = sd(delay_minutes, na.rm = TRUE),"
+"0","    lower_95 = avg - (2 * sd),"
+"0","    upper_95 = avg + (2 * sd),"
+"0","    max_observed = max(delay_minutes, na.rm = TRUE)"
+"0","  )"
+"1","Simple feature collection with 1 feature and 5 fields"
+"1","
+"
+"1","Geometry type: MULTIPOINT
+"
+"1","Dimension:     XY
+"
+"1","Bounding box:  "
+"1","xmin: -93.27767 ymin: 44.96721 xmax: -93.24696 ymax: 45.04226"
+"1","
+"
+"1","Geodetic CRS:  WGS 84
+"

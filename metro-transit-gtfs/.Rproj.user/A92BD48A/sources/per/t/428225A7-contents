@@ -1,0 +1,49 @@
+---
+title: "Articles related to Transit Delay Prediction, Reliability, and Community Accessibility "
+author: "Sohail Khan Mohammed"
+format: 
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+bibliography: references.bib
+csl: apa-annotated-bibliography.csl
+---
+
+
+## Overall Summary
+
+We know that Public-transit delay prediction is really important not only for improving operations from Company aspects but also for actually understanding whether riders can reliably reach jobs, schools,
+health care, and other essential destinations. I wanted to specifically look at Transit reliability as its more actionable and which depends on more than average scheduled travel time because day-to-day variation, delays,and missed transfers can make a trip that appears feasible in a static schedule
+unreliable in practice. I found studies by Braga, Loureiro, and Pereira where they found that "both inaccurate schedules and travel-time variability can substantially change estimates of
+public-transit accessibility, with especially important implications for
+lower-income areas" [@braga2023]. Additionally Liu, Porr, and Miller introduced this cool concept
+of "realizable accessibility"- which kind of measures accessibility that riders can
+actually achieve under real-time operating conditions rather than accessibility
+predicted from schedules alone [@liu2023]. Other research on transit delays also
+shows that disruptions can have unequal impacts on equity-seeking groups - this was very important deduction that I had because different populations rely on different routes, make different trips,
+and have different alternatives when service becomes unreliable
+[@liuShalaby2024].
+
+There's lot of literature showing that General Transit Feed Specification
+(GTFS), GTFS-Realtime, automated vehicle location (AVL), GPS, and weather data
+can be used to measure and predict transit delay very effectively. I have seen that researchers have used
+historical-average baselines, regression models, support vector machines,
+random forests, gradient boosting, and deep learning approaches for travel-time
+and arrival-time prediction [@abdi2021; @gu2021; @moosavi2023]. However something important I realized is that there isn't  a single model that's always best because prediction performance depends on
+the route, available data, service frequency, time of day, and validation
+strategy. That's why for this project I am open to looking at and comparing  how different ml models do and also more on understanding the impacts and how can actionable recommendations be given to Metro Transit. So, together, what I have found purposeful is that these studies establish that predicting delay is useful,but evaluating its accessibility and equity consequences makes the project more
+meaningful [@braga2023; @liu2023; @wessel2022].
+
+## Bibliography
+
+- in refrences.bib
+- csl: apa-annotated-bibliography.csl
+
+::: {#refs}
+:::
+
+## AI Statement
+
+I used Perplexity specifically to brainstorm  few helpful search terms to search, and help me to identify the potentially relevant sources. I have independently  read, evaluated, verified and select the final sources. I took some help in formatting my annotations but again read and imporved myself and used perpexity to choose simple wording that I wanted. 
+

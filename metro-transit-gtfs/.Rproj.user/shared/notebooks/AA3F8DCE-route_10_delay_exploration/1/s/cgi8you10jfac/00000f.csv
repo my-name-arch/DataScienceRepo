@@ -1,0 +1,15 @@
+"0","# Formatted summary string"
+"0","map_stops %>% summarise(txt = sprintf(""%.1f ± %.1f mins"", mean(delay_minutes, na.rm = TRUE), sd(delay_minutes, na.rm = TRUE)))"
+"1","Simple feature collection with 1 feature and 1 field"
+"1","
+"
+"1","Geometry type: MULTIPOINT
+"
+"1","Dimension:     XY
+"
+"1","Bounding box:  "
+"1","xmin: -93.27767 ymin: 44.96721 xmax: -93.24696 ymax: 45.04226"
+"1","
+"
+"1","Geodetic CRS:  WGS 84
+"

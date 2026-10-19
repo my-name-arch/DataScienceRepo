@@ -1,0 +1,189 @@
+---
+title: "route_10_delay_exploration by Sohail Khan Mohammed"
+format: html
+---
+
+1. Is there a certain relationship between the politics of a city/country and how much public transit is used?
+
+2. How have electric buses/trains improved efficiency significantly overall? 
+
+3. How accurately can we accurately predict how late a bus/train will be and what factors go into that? 
+
+4. Is there a relationship between free loaders and other factors and which stops are people thrown off by metro transit?
+
+5. How can certain laws regarding payments of ride  have ridership Methods of payment?
+
+
+
+
+
+```{r}
+library(arrow)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(sf)
+library(ggspatial)
+library(prettymapr)
+```
+
+
+
+
+```{r}
+# Downloaded the Metro Transit’s live Route 10 GTFS-Realtime Trip Updates every 15 seconds
+# Parsed the protobuf feed using Python's gtfs-realtime-bindings package
+# Joined each update GTFS schedule/stop metadata in DuckDB (local SQL analytics database optimized for analysis)
+# Saved the cleaned historical delay observations as partitioned Parquet files for Analysis in R
+
+
+
+# Dataset 
+
+parquet_path <- "../data/clean/trip_updates"
+
+trip_updates_dataset <- open_dataset(
+  parquet_path,
+  format = "parquet",
+  hive_style = FALSE 
+)
+
+```
+
+```{r}
+
+# creading a clean dataframe from parquet files. 
+
+route_10_df <- trip_updates_dataset %>%
+  filter(route_id == "10") %>%
+  filter(!is.na(effective_delay_sec)) %>%
+  collect() %>%
+  mutate(
+    observed_at_utc = ymd_hms(observed_at_utc, tz = "UTC"),
+    observed_at_ct = with_tz(observed_at_utc, tzone = "America/Chicago"),
+    delay_minutes = effective_delay_sec / 60,
+    delay_status = case_when(
+      delay_minutes < -1 ~ "Early",
+      delay_minutes <= 1 ~ "On time (within 1 minute)",
+      TRUE ~ "Late"
+    )
+  )
+
+
+glimpse(route_10_df)
+View(route_10_df)
+head(route_10_df)
+```
+
+
+
+```{r}
+# Delays visualization 
+
+route_10_df %>%
+  group_by(stop_sequence) %>%
+  summarise(
+    median_delay_minutes = median(delay_minutes),
+    .groups = "drop"
+  ) %>%
+  mutate(stop_sequence = as.integer(stop_sequence)) %>%
+  ggplot(aes(x = stop_sequence, y = median_delay_minutes)) +
+  geom_line(color = "#005A9C", linewidth = 1) +
+  geom_point(color = "#005A9C", size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") + # to show stops
+  labs(
+    title = "Route 10 Delay Across a Trip",
+    subtitle = "Median predicted delay by stop sequence",
+    x = "Stop sequence along the route",
+    y = "Median predicted delay (minutes)"
+  ) +
+  theme_minimal(base_size = 13)
+
+
+```
+This shows if the delays are stable or not answering --  Does Route 10 become more delayed as it moves through its scheduled trip?
+
+
+AI statement : I used AI for parsing, loading into DuckDB, saving historical data in parquet files as its more faster and smaller than saving in large CSV. Additionally for creaing the df from parquet file in R I used AI to guide me 
+
+
+```{r}
+# map of lat and longitude 
+map_stops <- st_as_sf(route_10_df, coords = c('stop_lon', 'stop_lat'))
+map_stops <- st_set_crs(map_stops, 4326)
+
+ggplot(map_stops)+
+  annotation_map_tile(type = "osm", zoom = 13)+
+  geom_sf(aes(color = delay_status), size = 2)+
+  theme_void() +
+  labs(title = "Transit Stops by Delay Status")
+  
+
+```
+
+```{r}
+library(leaflet)
+library(sf)
+
+# 1. Ensure your spatial data is in the standard web coordinate system (WGS84)
+map_stops_wgs84 <- st_transform(map_stops, crs = 4326)
+
+# 2. Define colors for your delay statuses
+pal <- colorFactor(
+  palette = c("tomato", "darkturquoise"), 
+  domain = map_stops_wgs84$delay_status
+)
+
+# 3. Create the interactive map
+leaflet(map_stops_wgs84) %>%
+  addTiles() %>%  # Adds the interactive OpenStreetMap background
+  addCircleMarkers(
+    color = ~pal(delay_status),
+    radius = 5,
+    stroke = FALSE, 
+    fillOpacity = 0.8,
+    # Hover popup showing details when you click a stop:
+    popup = ~paste0("<b>Stop:</b> ", stop_name, "<br>",
+                    "<b>Status:</b> ", delay_status, "<br>",
+                    "<b>Delay:</b> ", round(delay_minutes, 1), " mins")
+  ) %>%
+  addLegend(
+    pal = pal, 
+    values = ~delay_status, 
+    title = "Delay Status",
+    position = "bottomright"
+  )
+
+```
+
+```{r}
+library(dplyr)
+
+# Average delay across all stops
+mean(map_stops$delay_minutes, na.rm = TRUE)
+
+# Average delay split by route
+map_stops %>% 
+  group_by(route_id) %>% 
+  summarise(avg_delay = mean(delay_minutes, na.rm = TRUE))
+
+
+
+```
+```{r}
+# Formatted summary string
+map_stops %>% summarise(txt = sprintf("%.1f ± %.1f mins", mean(delay_minutes, na.rm = TRUE), sd(delay_minutes, na.rm = TRUE)))
+
+```
+```{r}
+map_stops %>% 
+  summarise(
+    avg = mean(delay_minutes, na.rm = TRUE),
+    sd = sd(delay_minutes, na.rm = TRUE),
+    lower_95 = avg - (2 * sd),
+    upper_95 = avg + (2 * sd),
+    max_observed = max(delay_minutes, na.rm = TRUE)
+  )
+
+```
+

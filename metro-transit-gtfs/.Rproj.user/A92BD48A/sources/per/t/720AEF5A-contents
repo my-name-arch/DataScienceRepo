@@ -1,0 +1,140 @@
+@article{braga2023,
+  author = {Braga, Carlos Kaue V. and Loureiro, Carlos Felipe Grangeiro and Pereira, Rafael H. M.},
+  title = {Evaluating the Impact of Public Transport Travel Time Inaccuracy and Variability on Socio-Spatial Inequalities in Accessibility},
+  journal = {Journal of Transport Geography},
+  volume = {109},
+  pages = {103590},
+  year = {2023},
+  doi = {10.1016/j.jtrangeo.2023.103590},
+  note = {This article particularly shows how inaccurate transit schedules and day-to-day travel-time variation affects  access to jobs in Fortaleza, Brazil.}
+}
+
+@article{liu2023,
+  author = {Liu, Luyu and Porr, Adam and Miller, Harvey J.},
+  title = {Realizable Accessibility: Evaluating the Reliability of Public Transit Accessibility Using High-Resolution Real-Time Data},
+  journal = {Journal of Geographical Systems},
+  volume = {25},
+  number = {3},
+  pages = {429--451},
+  year = {2023},
+  doi = {10.1007/s10109-022-00382-w},
+  note = {This article introduces the cool realizable accessibility concepts, which estimates the destinations riders can actually reach when real-time transit conditions and delays are considered. Its case study obly focuses on one bus system in Columbus, Ohio; although its a cool source for me. }
+}
+
+@article{liuShalaby2024,
+  author = {Liu, Rick Zhaoju and Shalaby, Amer},
+  title = {Impacts of Public Transit Delays and Disruptions on Equity Seeking Groups in Toronto--A Time-Expanded Graph Approach},
+  journal = {Journal of Transport Geography},
+  volume = {114},
+  pages = {103763},
+  year = {2024},
+  doi = {10.1016/j.jtrangeo.2023.103763},
+  note = {This study uses real-time transit data and a time-expanded network approach to examine how delays and disruptions affects equity-seeking groups in Toronto.}
+}
+
+@article{wessel2022,
+  author = {Aemmer, Z. and Ranjbari, A. and MacKenzie, D.},
+  title = {Measurement and Classification of Transit Delays Using {GTFS-RT} Data},
+  journal = {Public Transport},
+  volume = {14},
+  number = {2},
+  pages = {263--285},
+  year = {2022},
+  doi = {10.1007/s12469-022-00291-7},
+  note = {This article in a way presents a great method for extracting transit performance measures from GTFS-Realtime data and grouping delay information by roadway segment.}
+}
+
+@article{wessel2017,
+  author = {Wessel, Nate and Allen, Jeff and Farber, Steven},
+  title = {Constructing a Routable Retrospective Transit Timetable from a Real-Time Vehicle Location Feed and {GTFS}},
+  journal = {Journal of Transport Geography},
+  volume = {62},
+  pages = {92--97},
+  year = {2017},
+  doi = {10.1016/j.jtrangeo.2017.04.012},
+  note = {This reasearch  paper explains how real-time vehicle-location data can be combined with scheduled GTFS data to create a retrospective timetable based on observed transit operations.}
+}
+
+
+@article{wessel2019,
+  author = {Wessel, Nate and Allen, Jeff and Farber, Steven},
+  title = {On the Accuracy of Schedule-Based {GTFS} for Measuring Accessibility},
+  journal = {Journal of Transport and Land Use},
+  volume = {12},
+  number = {1},
+  pages = {475--500},
+  year = {2019},
+  doi = {10.5198/jtlu.2019.1502},
+  note = {This article evaluates very well  how accurately scheduled GTFS data measures transit accessibility compared with retrospective data based on actual operations. The paper is reliable because it directly compares schedule-based and observed network conditions, but its results depend on the geography and transit network studied.}
+}
+
+@article{abdi2021,
+  author = {Abdi, A. and others},
+  title = {A Review of Travel and Arrival-Time Prediction Methods on Road Networks},
+  journal = {IEEE Access},
+  year = {2021},
+  note = {This review does a good job of summarizing traditional statistical methods and machine-learning methods for predicting travel and arrival times on transportation networks. It is useful for understanding the range of available models and evaluation metrics, although it covers road networks broadly rather than focusing only on public transit.}
+}
+
+@article{gu2021,
+  author = {Gu, Xiaoning and Chen, Chao and Yang, Yunong and Miao, Xingzhi and Yao, Baozhen},
+  title = {Reliability Prediction of Further Transit Service Based on Support Vector Machine},
+  journal = {Proceedings of the Institution of Mechanical Engineers, Part O: Journal of Risk and Reliability},
+  year = {2021},
+  doi = {10.1177/0020294019858101},
+  note = {This study applies a support vector machine approach to predict the reliability of future transit service. It is a useful peer-reviewed example of using machine learning for transit reliability, although the methods and data may be specific to the service system examined by the authors. This source gives me one possible modeling approach and reinforces the idea that accurate reliability information can help riders make better travel decisions.}
+}
+
+@article{moosavi2023,
+  author = {Moosavi, S. M. H. and others},
+  title = {Evaluation of Applicability and Accuracy of Bus Travel Time Prediction Using Tree-Based Machine Learning Techniques},
+  journal = {Journal of Soft Computing in Civil Engineering},
+  year = {2023},
+  note = {This article compares tree-based machine-learning methods for predicting bus travel time using operational transit data. The study is useful because it compares several models instead of assuming that one algorithm always works best, although the journal and study setting should be checked carefully for relevance to my own data. This source supports testing random forest or gradient boosting alongside a simple baseline rather than relying on one model.}
+}
+
+@article{rum2024,
+  author = {Rum, Siti Nurulain Mohd and Yusoff, Meor Muhammad Nazmi Meor and Mahdi, Amalia},
+  title = {Public Transport Delay Prediction Using Deep Learning},
+  journal = {Journal of Advanced Research in Applied Sciences and Engineering Technology},
+  volume = {59},
+  number = {1},
+  pages = {1--10},
+  year = {2024},
+  note = {This article uses a deep-learning model to predict public-transport delays using transit and weather-related information. It is helpful as a recent example of a prediction-focused study, but deep-learning results can be harder to interpret and may require more data than a class project has available. This source helps me consider weather and other external variables while also reminding me to compare complex models with simpler and more interpretable methods.}
+}
+
+@article{lomax2002,
+  author = {Lomax, Tim and others},
+  title = {Using Travel Time Measures to Estimate Mobility and Reliability},
+  institution = {Federal Highway Administration and Bureau of Transportation Statistics},
+  year = {2002},
+  note = {This report explains how travel-time measures can be used to evaluate mobility and reliability in transportation systems. It is an older government report rather than a recent peer-reviewed article, but it is useful for defining reliability and identifying common sources of travel-time variation. This source provides background for why average travel time alone is not enough to describe the rider experience.}
+}
+
+@report{fosgerau2010,
+  author = {Fosgerau, Mogens and others},
+  title = {The Valuation of Travel Time Variability},
+  institution = {International Transport Forum, Organisation for Economic Co-operation and Development},
+  year = {2010},
+  note = {This report discusses why travelers value predictable travel times and may experience costs from uncertainty even when average trip time does not change. It is a credible policy-oriented source, although it is broader than public transit and does not focus on a specific local community. This source helps explain why predicting delay can be valuable to riders, agencies, and planners even if a prediction does not directly remove the delay.}
+}
+
+@misc{gtfsRealtimeReference,
+  author = {{MobilityData}},
+  title = {{GTFS Realtime Reference}},
+  year = {2026},
+  url = {https://gtfs.org/documentation/realtime/reference/},
+  urldate = {2026-09-21},
+  note = {This technical reference explains the GTFS-Realtime format used by transit agencies to publish trip updates, vehicle positions, and service alerts. It is an authoritative technical source but not a peer-reviewed research article, so it is best used for data documentation rather than as the main support for a research claim. This source will help me correctly interpret fields such as delay, stop-time updates, trip updates, and vehicle positions in transit data.}
+}
+
+@misc{metroTransitGTFS,
+  author = {{Metro Transit}},
+  title = {{GTFS and GTFS-Realtime Data}},
+  year = {2026},
+  url = {https://svc.metrotransit.org/},
+  urldate = {2026-09-21},
+  note = {Metro Transit provides static GTFS schedules as well as GTFS-Realtime feeds for transit service in the Twin Cities region. This is a primary local data-source document rather than an academic source, so it is most useful for describing where the project data comes from and what it contains. This source is important because it makes a local analysis of bus schedules, vehicle positions, trip updates, and delays feasible.}
+}
+
