@@ -1,4 +1,4 @@
-#!/Users/mohammedsohailkhan/Desktop/Fall2026/Projcts_in_DS/metro-transit-gtfs/.venv/bin/python3
+#!/Users/dooleykim/Documents/GitHub/DataScienceRepo/metro-transit-gtfs/.venv/bin/python3.15
 import sys
 from charset_normalizer.cli import cli_detect
 if __name__ == '__main__':
