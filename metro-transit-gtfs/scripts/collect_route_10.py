@@ -5,31 +5,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 from google.transit import gtfs_realtime_pb2
 
+# --- Paths & Configuration ---
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_DIR / "metro_transit.duckdb"
 OUTPUT_DIR = PROJECT_DIR / "data" / "clean" / "trip_updates_enriched"
 FEED_URL = "https://svc.metrotransit.org/mtgtfs/tripupdates.pb"
 
 ROUTE_ID = "10"
-POLL_SECONDS = 15
-WRITE_EVERY_SECONDS = 300
+POLL_SECONDS = 30
+WRITE_EVERY_SECONDS = 300  # Flush Parquet batch to disk every 5 minutes
 
 TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY", "")
-TRAFFIC_CACHE_TTL = 180
-WEATHER_CACHE_TTL = 600
+TRAFFIC_CACHE_TTL = 180  # Refresh traffic every 3 minutes
+WEATHER_CACHE_TTL = 600  # Refresh weather every 10 minutes
 
+# Corridor checkpoints along Route 10 (Downtown Mpls -> Central Ave NE -> Northtown)
 CORRIDOR_CHECKPOINTS = {
-    "downtown_st_paul": (44.9537, -93.0900),
-    "university_snelling": (44.9555, -93.1668),
+    "downtown_mpls": (44.9785, -93.2680),
     "central_northeast": (45.0112, -93.2471),
-    "north_suburbs": (45.0683, -93.2477),
+    "columbia_heights": (45.0450, -93.2475),
+    "north_suburbs": (45.1275, -93.2485),
 }
 
+# Explicit schema prevents "NULL" type inference mismatch in DuckDB
 ENRICHED_SCHEMA = pa.schema([
     ("observed_at_utc", pa.string()),
     ("feed_timestamp_epoch", pa.int64()),
@@ -61,6 +65,7 @@ ENRICHED_SCHEMA = pa.schema([
     ("weather_wind_mph", pa.float64()),
 ])
 
+# Global in-memory caches
 traffic_cache = {"last_fetch": 0, "data": {}}
 weather_cache = {}
 
@@ -68,6 +73,7 @@ weather_cache = {}
 def get_static_lookups():
     con = duckdb.connect(str(DB_PATH), read_only=True)
 
+    # 1. Schedule lookup (matches trip_id + stop_id + stop_sequence)
     schedule_rows = con.execute("""
         SELECT
             TRIM(CAST(t.trip_id AS VARCHAR)) AS trip_id,
@@ -88,6 +94,7 @@ def get_static_lookups():
         WHERE t.route_id = ?
     """, [ROUTE_ID]).fetchall()
 
+    # 2. Standalone stop lookup for fallback coordinates
     stop_rows = con.execute("""
         SELECT 
             TRIM(CAST(stop_id AS VARCHAR)) AS stop_id, 
@@ -104,21 +111,21 @@ def get_static_lookups():
     for r in schedule_rows:
         key = (str(r[0]), str(r[4]), str(r[5]))
         schedule_lookup[key] = {
-            "route_short_name": r[1],
-            "trip_headsign": r[2],
+            "route_short_name": str(r[1]) if r[1] is not None else "10",
+            "trip_headsign": str(r[2]) if r[2] is not None else None,
             "direction_id": str(r[3]) if r[3] is not None else None,
-            "stop_name": r[6],
+            "stop_name": str(r[6]) if r[6] is not None else None,
             "stop_lat": float(r[7]) if r[7] is not None else None,
             "stop_lon": float(r[8]) if r[8] is not None else None,
-            "scheduled_arrival": r[9],
-            "scheduled_departure": r[10],
+            "scheduled_arrival": str(r[9]) if r[9] is not None else None,
+            "scheduled_departure": str(r[10]) if r[10] is not None else None,
         }
 
     stops_dict = {
         str(s[0]): {
-            "stop_name": s[1],
-            "stop_lat": float(s[2]),
-            "stop_lon": float(s[3]),
+            "stop_name": str(s[1]) if s[1] is not None else None,
+            "stop_lat": float(s[2]) if s[2] is not None else None,
+            "stop_lon": float(s[3]) if s[3] is not None else None,
         }
         for s in stop_rows
     }
@@ -164,19 +171,13 @@ def update_traffic_cache(session):
             if res.status_code == 200:
                 flow = res.json().get("flowSegmentData", {})
                 current_speed = flow.get("currentSpeed")
-                free_flow = flow.get("freeFlowSpeed", 1)
-
-                jam_factor = 0.0
-                if current_speed is not None and free_flow:
-                    jam_factor = max(
-                        0.0,
-                        min(1.0, round(1.0 - (float(current_speed) / float(free_flow)), 2))
-                    )
+                free_flow = flow.get("freeFlowSpeed")
+                jam_factor = flow.get("jamFactor")
 
                 new_data[segment_name] = {
                     "current_speed_mph": float(current_speed) if current_speed is not None else None,
                     "free_flow_speed_mph": float(free_flow) if free_flow is not None else None,
-                    "jam_factor": float(jam_factor),
+                    "jam_factor": float(jam_factor) if jam_factor is not None else None,
                     "road_closure": bool(flow.get("roadClosure", False)),
                 }
         except requests.RequestException:
@@ -189,22 +190,19 @@ def update_traffic_cache(session):
     return traffic_cache["data"]
 
 
-def get_current_weather(session, lat, lon):
-    if lat is None or lon is None:
-        return {}
-
-    grid_key = (round(lat, 2), round(lon, 2))
+def get_current_weather(session, corridor):
     now = time.monotonic()
 
-    if grid_key in weather_cache:
-        cached_time, val = weather_cache[grid_key]
+    if corridor in weather_cache:
+        cached_time, val = weather_cache[corridor]
         if now - cached_time < WEATHER_CACHE_TTL:
             return val
 
+    lat, lon = CORRIDOR_CHECKPOINTS[corridor]
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
-        "latitude": grid_key[0],
-        "longitude": grid_key[1],
+        "latitude": lat,
+        "longitude": lon,
         "current": "temperature_2m,precipitation,snowfall,weather_code,wind_speed_10m",
         "temperature_unit": "fahrenheit",
         "wind_speed_unit": "mph",
@@ -222,7 +220,7 @@ def get_current_weather(session, lat, lon):
                 "weather_code": int(current["weather_code"]) if current.get("weather_code") is not None else None,
                 "weather_wind_mph": float(current["wind_speed_10m"]) if current.get("wind_speed_10m") is not None else None,
             }
-            weather_cache[grid_key] = (now, w_data)
+            weather_cache[corridor] = (now, w_data)
             return w_data
     except requests.RequestException:
         pass
@@ -239,32 +237,25 @@ def parse_route_10_updates(feed, observed_at_utc, schedule_lookup, stops_dict, s
             continue
 
         update = entity.trip_update
-        if update.trip.route_id != ROUTE_ID:
+        if str(update.trip.route_id).strip() != ROUTE_ID:
+            continue
+
+        vehicle_id = str(update.vehicle.id).strip() if update.HasField("vehicle") else None
+
+        # Exclude synthetic schedule-based vehicles
+        if vehicle_id and "_schedBasedVehicle" in vehicle_id:
             continue
 
         trip_id = str(update.trip.trip_id).strip()
-        vehicle_id = update.vehicle.id if update.HasField("vehicle") else None
 
         for stop_update in update.stop_time_update:
             stop_id = str(stop_update.stop_id).strip()
-            stop_sequence = str(stop_update.stop_sequence).strip()
+            stop_sequence = str(stop_update.stop_sequence).strip() if stop_update.stop_sequence is not None else None
 
-            arrival_delay_sec = (
-                stop_update.arrival.delay
-                if stop_update.HasField("arrival")
-                else None
-            )
-            departure_delay_sec = (
-                stop_update.departure.delay
-                if stop_update.HasField("departure")
-                else None
-            )
+            arrival_delay_sec = int(stop_update.arrival.delay) if stop_update.HasField("arrival") else None
+            departure_delay_sec = int(stop_update.departure.delay) if stop_update.HasField("departure") else None
 
-            effective_delay_sec = (
-                arrival_delay_sec
-                if arrival_delay_sec is not None
-                else departure_delay_sec
-            )
+            effective_delay_sec = departure_delay_sec if departure_delay_sec is not None else arrival_delay_sec
 
             key = (trip_id, stop_id, stop_sequence)
             static = schedule_lookup.get(key)
@@ -276,39 +267,36 @@ def parse_route_10_updates(feed, observed_at_utc, schedule_lookup, stops_dict, s
 
             corridor = find_nearest_corridor(lat, lon)
             seg_traffic = traffic_data.get(corridor, {})
-
-            w_lat = lat if lat is not None else CORRIDOR_CHECKPOINTS[corridor][0]
-            w_lon = lon if lon is not None else CORRIDOR_CHECKPOINTS[corridor][1]
-            weather = get_current_weather(session, w_lat, w_lon)
+            weather = get_current_weather(session, corridor)
 
             rows.append({
                 "observed_at_utc": observed_at_utc.isoformat(),
                 "feed_timestamp_epoch": int(feed.header.timestamp),
                 "route_id": str(ROUTE_ID),
-                "route_short_name": static.get("route_short_name", "10"),
-                "trip_id": trip_id,
-                "trip_headsign": static.get("trip_headsign"),
-                "direction_id": static.get("direction_id"),
-                "vehicle_id": str(vehicle_id) if vehicle_id else None,
-                "stop_id": stop_id,
-                "stop_sequence": stop_sequence,
-                "stop_name": static.get("stop_name"),
-                "stop_lat": lat,
-                "stop_lon": lon,
-                "scheduled_arrival": static.get("scheduled_arrival"),
-                "scheduled_departure": static.get("scheduled_departure"),
+                "route_short_name": str(static.get("route_short_name", "10")),
+                "trip_id": str(trip_id) if trip_id is not None else None,
+                "trip_headsign": str(static.get("trip_headsign")) if static.get("trip_headsign") is not None else None,
+                "direction_id": str(static.get("direction_id")) if static.get("direction_id") is not None else None,
+                "vehicle_id": str(vehicle_id) if vehicle_id is not None else None,
+                "stop_id": str(stop_id) if stop_id is not None else None,
+                "stop_sequence": str(stop_sequence) if stop_sequence is not None else None,
+                "stop_name": str(static.get("stop_name")) if static.get("stop_name") is not None else None,
+                "stop_lat": float(lat) if lat is not None and not math.isnan(lat) else None,
+                "stop_lon": float(lon) if lon is not None and not math.isnan(lon) else None,
+                "scheduled_arrival": str(static.get("scheduled_arrival")) if static.get("scheduled_arrival") is not None else None,
+                "scheduled_departure": str(static.get("scheduled_departure")) if static.get("scheduled_departure") is not None else None,
                 "arrival_delay_sec": arrival_delay_sec,
                 "departure_delay_sec": departure_delay_sec,
                 "effective_delay_sec": effective_delay_sec,
-                "corridor_segment": corridor,
+                "corridor_segment": str(corridor),
                 "traffic_current_speed_mph": seg_traffic.get("current_speed_mph"),
                 "traffic_free_flow_speed_mph": seg_traffic.get("free_flow_speed_mph"),
                 "traffic_jam_factor": seg_traffic.get("jam_factor"),
-                "traffic_road_closure": seg_traffic.get("road_closure"),
+                "traffic_road_closure": bool(seg_traffic.get("road_closure")) if seg_traffic.get("road_closure") is not None else False,
                 "weather_temp_f": weather.get("weather_temp_f"),
                 "weather_precip_in": weather.get("weather_precip_in"),
                 "weather_snowfall_in": weather.get("weather_snowfall_in"),
-                "weather_code": weather.get("weather_code"),
+                "weather_code": int(weather["weather_code"]) if weather.get("weather_code") is not None else None,
                 "weather_wind_mph": weather.get("weather_wind_mph"),
             })
 
@@ -317,7 +305,7 @@ def parse_route_10_updates(feed, observed_at_utc, schedule_lookup, stops_dict, s
 
 def write_parquet(rows, write_time_utc):
     if not rows:
-        print("No Route 10 records to write in this batch.")
+        print("No real-time Route 10 records to write in this batch.")
         return
 
     service_date = write_time_utc.strftime("%Y-%m-%d")
@@ -334,11 +322,39 @@ def write_parquet(rows, write_time_utc):
     file_name = write_time_utc.strftime("trip_updates_enriched_%Y%m%d_%H%M%S.parquet")
     output_path = partition_dir / file_name
 
-    table = pa.Table.from_pylist(rows, schema=ENRICHED_SCHEMA)
+    df = pd.DataFrame(rows)
+
+    string_cols = [
+        "observed_at_utc", "route_id", "route_short_name", "trip_id",
+        "trip_headsign", "direction_id", "vehicle_id", "stop_id",
+        "stop_sequence", "stop_name", "scheduled_arrival", "scheduled_departure",
+        "corridor_segment"
+    ]
+    for col in string_cols:
+        if col in df.columns:
+            df[col] = df[col].astype("string")
+
+    int_cols = ["feed_timestamp_epoch", "arrival_delay_sec", "departure_delay_sec", "effective_delay_sec", "weather_code"]
+    for col in int_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    float_cols = [
+        "stop_lat", "stop_lon", "traffic_current_speed_mph", "traffic_free_flow_speed_mph",
+        "traffic_jam_factor", "weather_temp_f", "weather_precip_in", "weather_snowfall_in", "weather_wind_mph"
+    ]
+    for col in float_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+
+    if "traffic_road_closure" in df.columns:
+        df["traffic_road_closure"] = df["traffic_road_closure"].astype("boolean")
+
+    table = pa.Table.from_pandas(df, schema=ENRICHED_SCHEMA, preserve_index=False)
     pq.write_table(table, output_path, compression="zstd")
 
     print(
-        f"Wrote {len(rows):,} enriched records to "
+        f"Wrote {len(df):,} enriched records to "
         f"{output_path.relative_to(PROJECT_DIR)}"
     )
 

@@ -22,7 +22,7 @@ def compact():
     # Atomically replace the old master
     TEMP_MASTER.replace(OUTPUT_MASTER)
 
-    # Use con.execute() which returns a cursor that supports .fetchone()
+    # In DuckDB 2.0+, use con.execute().fetchone() or con.sql().fetchall()
     count = con.execute(f"SELECT COUNT(*) FROM '{OUTPUT_MASTER}'").fetchone()[0]
     print(f"Master file created: {OUTPUT_MASTER.relative_to(PROJECT_DIR)}")
     print(f"Total rows in master: {count:,}")
