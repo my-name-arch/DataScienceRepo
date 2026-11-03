@@ -2733,9 +2733,10 @@ Wrote 7,769 enriched records to data/clean/trip_updates_enriched/route_id=10/ser
 Wrote 8,599 enriched records to data/clean/trip_updates_enriched/route_id=10/service_date=2026-11-03/hour=22/trip_updates_enriched_20261103_224555.parquet
 2026-11-03T22:46:25.485738+00:00 | Captured 969 Route 10 stop records | Queue: 969
 2026-11-03T22:46:55.917062+00:00 | Captured 965 Route 10 stop records | Queue: 1,934
-d 874 Route 10 stop records | Queue: 2,633
-2026-11-03T20:59:49.036187+00:00 | Request error: 404 Client Error: Not Found for url: https://svc.metrotransit.org/mtgtfs/tripupdates.pb
-2026-11-03T21:00:19.057773+00:00 | Captured 862 Route 10 stop records | Queue: 3,495
+2026-11-03T22:47:26.094832+00:00 | Captured 961 Route 10 stop records | Queue: 2,895
+2026-11-03T22:47:56.287391+00:00 | Captured 953 Route 10 stop records | Queue: 3,848
+2026-11-03T22:48:26.761323+00:00 | Captured 1,002 Route 10 stop records | Queue: 4,850
+e: 3,495
 2026-11-03T21:00:49.241760+00:00 | Captured 860 Route 10 stop records | Queue: 4,355
 2026-11-03T21:01:19.719679+00:00 | Captured 852 Route 10 stop records | Queue: 5,207
 2026-11-03T21:01:49.912728+00:00 | Captured 849 Route 10 stop records | Queue: 6,056
@@ -2945,3 +2946,5 @@ Wrote 9,513 enriched records to data/clean/trip_updates_enriched/route_id=10/ser
 2026-11-03T22:46:00.675792+00:00 | Captured 974 Route 10 stop records | Queue: 2,938
 2026-11-03T22:46:30.896074+00:00 | Captured 969 Route 10 stop records | Queue: 3,907
 2026-11-03T22:47:01.150564+00:00 | Captured 965 Route 10 stop records | Queue: 4,872
+2026-11-03T22:47:31.578054+00:00 | Captured 958 Route 10 stop records | Queue: 5,830
+2026-11-03T22:48:02.070330+00:00 | Captured 953 Route 10 stop records | Queue: 6,783
