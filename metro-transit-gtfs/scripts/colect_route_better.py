@@ -1,0 +1,504 @@
+import math
+import os
+from pathlib import Path
+import time
+from datetime import datetime, timezone
+
+import duckdb
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+import requests
+from google.transit import gtfs_realtime_pb2
+
+# --- Paths & Configuration ---
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DB_PATH = PROJECT_DIR / "metro_transit.duckdb"
+OUTPUT_DIR = PROJECT_DIR / "data" / "clean" / "trip_updates_enriched"
+
+TRIP_UPDATES_URL = "https://svc.metrotransit.org/mtgtfs/tripupdates.pb"
+VEHICLE_POSITIONS_URL = "https://svc.metrotransit.org/mtgtfs/vehiclepositions.pb"
+
+ROUTE_ID = "10"
+POLL_SECONDS = 30
+WRITE_EVERY_SECONDS = 300  # Flush Parquet batch to disk every 5 minutes
+
+TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY", "")
+TOMTOM_GRID_PRECISION = 3  # ~110m grid cell resolution
+TOMTOM_CACHE_TTL = 180     # Cache traffic for 3 minutes per spatial cell
+WEATHER_CACHE_TTL = 600    # Refresh weather every 10 minutes
+
+# Corridor checkpoints along Route 10 for segment tagging & weather fallback
+CORRIDOR_CHECKPOINTS = {
+    "downtown_mpls": (44.9785, -93.2680),
+    "central_northeast": (45.0112, -93.2471),
+    "columbia_heights": (45.0450, -93.2475),
+    "north_suburbs": (45.1275, -93.2485),
+}
+
+# Explicit PyArrow Schema with bus coordinates added
+ENRICHED_SCHEMA = pa.schema(
+    [
+        ("observed_at_utc", pa.string()),
+        ("feed_timestamp_epoch", pa.int64()),
+        ("route_id", pa.string()),
+        ("route_short_name", pa.string()),
+        ("trip_id", pa.string()),
+        ("trip_headsign", pa.string()),
+        ("direction_id", pa.string()),
+        ("vehicle_id", pa.string()),
+        ("bus_lat", pa.float64()),
+        ("bus_lon", pa.float64()),
+        ("bus_bearing", pa.float64()),
+        ("stop_id", pa.string()),
+        ("stop_sequence", pa.string()),
+        ("stop_name", pa.string()),
+        ("stop_lat", pa.float64()),
+        ("stop_lon", pa.float64()),
+        ("scheduled_arrival", pa.string()),
+        ("scheduled_departure", pa.string()),
+        ("arrival_delay_sec", pa.int64()),
+        ("departure_delay_sec", pa.int64()),
+        ("effective_delay_sec", pa.int64()),
+        ("corridor_segment", pa.string()),
+        ("traffic_current_speed_mph", pa.float64()),
+        ("traffic_free_flow_speed_mph", pa.float64()),
+        ("traffic_jam_factor", pa.float64()),
+        ("traffic_road_closure", pa.bool_()),
+        ("weather_temp_f", pa.float64()),
+        ("weather_precip_in", pa.float64()),
+        ("weather_snowfall_in", pa.float64()),
+        ("weather_code", pa.int64()),
+        ("weather_wind_mph", pa.float64()),
+    ]
+)
+
+# In-memory caches
+# tomtom_spatial_cache: {(round_lat, round_lon): (fetch_time, traffic_data)}
+tomtom_spatial_cache = {}
+# weather_cache: {corridor_segment: (fetch_time, weather_data)}
+weather_cache = {}
+
+
+def get_static_lookups():
+    con = duckdb.connect(str(DB_PATH), read_only=True)
+
+    # 1. Schedule lookup (matches trip_id + stop_id + stop_sequence)
+    schedule_rows = con.execute(
+        """
+        SELECT
+            TRIM(CAST(t.trip_id AS VARCHAR)) AS trip_id,
+            r.route_short_name,
+            t.trip_headsign,
+            t.direction_id,
+            TRIM(CAST(st.stop_id AS VARCHAR)) AS stop_id,
+            TRIM(CAST(st.stop_sequence AS VARCHAR)) AS stop_sequence,
+            s.stop_name,
+            TRY_CAST(s.stop_lat AS DOUBLE) AS stop_lat,
+            TRY_CAST(s.stop_lon AS DOUBLE) AS stop_lon,
+            st.arrival_time AS scheduled_arrival,
+            st.departure_time AS scheduled_departure
+        FROM trips AS t
+        JOIN routes AS r ON t.route_id = r.route_id
+        JOIN stop_times AS st ON t.trip_id = st.trip_id
+        JOIN stops AS s ON st.stop_id = s.stop_id
+        WHERE t.route_id = ?
+        """,
+        [ROUTE_ID],
+    ).fetchall()
+
+    # 2. Standalone stop lookup for guaranteed coordinates fallback
+    stop_rows = con.execute(
+        """
+        SELECT 
+            TRIM(CAST(stop_id AS VARCHAR)) AS stop_id, 
+            TRIM(stop_name) AS stop_name, 
+            TRY_CAST(stop_lat AS DOUBLE) AS stop_lat, 
+            TRY_CAST(stop_lon AS DOUBLE) AS stop_lon
+        FROM stops
+        WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+        """
+    ).fetchall()
+
+    con.close()
+
+    schedule_lookup = {}
+    for r in schedule_rows:
+        key = (str(r[0]), str(r[4]), str(r[5]))
+        schedule_lookup[key] = {
+            "route_short_name": str(r[1]) if r[1] is not None else "10",
+            "trip_headsign": str(r[2]) if r[2] is not None else None,
+            "direction_id": str(r[3]) if r[3] is not None else None,
+            "stop_name": str(r[6]) if r[6] is not None else None,
+            "stop_lat": float(r[7]) if r[7] is not None else None,
+            "stop_lon": float(r[8]) if r[8] is not None else None,
+            "scheduled_arrival": str(r[9]) if r[9] is not None else None,
+            "scheduled_departure": str(r[10]) if r[10] is not None else None,
+        }
+
+    stops_dict = {
+        str(s[0]): {
+            "stop_name": str(s[1]) if s[1] is not None else None,
+            "stop_lat": float(s[2]) if s[2] is not None else None,
+            "stop_lon": float(s[3]) if s[3] is not None else None,
+        }
+        for s in stop_rows
+    }
+
+    return schedule_lookup, stops_dict
+
+
+def find_nearest_corridor(lat, lon):
+    if lat is None or lon is None:
+        return "central_northeast"
+
+    best_corridor = "central_northeast"
+    min_dist = float("inf")
+    for name, (c_lat, c_lon) in CORRIDOR_CHECKPOINTS.items():
+        dist = math.hypot(lat - c_lat, lon - c_lon)
+        if dist < min_dist:
+            min_dist = dist
+            best_corridor = name
+    return best_corridor
+
+
+def get_traffic_for_coordinate(session, lat, lon):
+    """Queries TomTom flow segment data throttled by a spatial rounding cache."""
+    if not TOMTOM_API_KEY or lat is None or lon is None:
+        return {}
+
+    grid_key = (round(float(lat), TOMTOM_GRID_PRECISION), round(float(lon), TOMTOM_GRID_PRECISION))
+    now = time.monotonic()
+
+    if grid_key in tomtom_spatial_cache:
+        cached_time, cached_data = tomtom_spatial_cache[grid_key]
+        if now - cached_time < TOMTOM_CACHE_TTL:
+            return cached_data
+
+    base_url = "https://api.tomtom.com/traffic/services/4/flowSegmentData/relative0/10/json"
+    params = {
+        "point": f"{lat},{lon}",
+        "unit": "mph",
+        "key": TOMTOM_API_KEY,
+    }
+
+    try:
+        res = session.get(base_url, params=params, timeout=5)
+        if res.status_code == 200:
+            flow = res.json().get("flowSegmentData", {})
+            metrics = {
+                "current_speed_mph": float(flow["currentSpeed"]) if flow.get("currentSpeed") is not None else None,
+                "free_flow_speed_mph": float(flow["freeFlowSpeed"]) if flow.get("freeFlowSpeed") is not None else None,
+                "jam_factor": float(flow["jamFactor"]) if flow.get("jamFactor") is not None else None,
+                "road_closure": bool(flow.get("roadClosure", False)),
+            }
+            tomtom_spatial_cache[grid_key] = (now, metrics)
+            return metrics
+        elif res.status_code == 429:
+            print("[WARN] TomTom rate limit reached (HTTP 429).")
+    except requests.RequestException:
+        pass
+
+    return {}
+
+
+def get_current_weather(session, corridor):
+    now = time.monotonic()
+
+    if corridor in weather_cache:
+        cached_time, val = weather_cache[corridor]
+        if now - cached_time < WEATHER_CACHE_TTL:
+            return val
+
+    lat, lon = CORRIDOR_CHECKPOINTS[corridor]
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,precipitation,snowfall,weather_code,wind_speed_10m",
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "precipitation_unit": "inch",
+    }
+
+    try:
+        res = session.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            current = res.json().get("current", {})
+            w_data = {
+                "weather_temp_f": float(current["temperature_2m"]) if current.get("temperature_2m") is not None else None,
+                "weather_precip_in": float(current["precipitation"]) if current.get("precipitation") is not None else None,
+                "weather_snowfall_in": float(current["snowfall"]) if current.get("snowfall") is not None else None,
+                "weather_code": int(current["weather_code"]) if current.get("weather_code") is not None else None,
+                "weather_wind_mph": float(current["wind_speed_10m"]) if current.get("wind_speed_10m") is not None else None,
+            }
+            weather_cache[corridor] = (now, w_data)
+            return w_data
+    except requests.RequestException:
+        pass
+
+    return {}
+
+
+def fetch_route_10_vehicle_positions(session):
+    """Fetches real-time bus GPS coordinates for Route 10 from vehiclepositions.pb."""
+    try:
+        res = session.get(VEHICLE_POSITIONS_URL, timeout=10)
+        res.raise_for_status()
+
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(res.content)
+
+        bus_positions = {}
+        for entity in feed.entity:
+            if not entity.HasField("vehicle"):
+                continue
+
+            v = entity.vehicle
+            if str(v.trip.route_id).strip() != ROUTE_ID:
+                continue
+
+            trip_id = str(v.trip.trip_id).strip()
+            bus_positions[trip_id] = {
+                "vehicle_id": str(v.vehicle.id).strip() if v.HasField("vehicle") else None,
+                "bus_lat": float(v.position.latitude),
+                "bus_lon": float(v.position.longitude),
+                "bearing": float(v.position.bearing) if v.position.HasField("bearing") else None,
+                "gps_timestamp": int(v.timestamp) if v.timestamp else None,
+            }
+        return bus_positions
+    except requests.RequestException as e:
+        print(f"Error fetching vehicle positions: {e}")
+        return {}
+
+
+def parse_route_10_updates(feed, observed_at_utc, schedule_lookup, stops_dict, session):
+    rows = []
+
+    # 1. Fetch live GPS coordinates of moving buses
+    live_buses = fetch_route_10_vehicle_positions(session)
+
+    # 2. Iterate through Trip Updates feed
+    for entity in feed.entity:
+        if not entity.HasField("trip_update"):
+            continue
+
+        update = entity.trip_update
+        if str(update.trip.route_id).strip() != ROUTE_ID:
+            continue
+
+        trip_id = str(update.trip.trip_id).strip()
+
+        # Join bus GPS position on trip_id
+        bus_info = live_buses.get(trip_id, {})
+        bus_lat = bus_info.get("bus_lat")
+        bus_lon = bus_info.get("bus_lon")
+        bus_bearing = bus_info.get("bearing")
+
+        vehicle_id = (
+            str(update.vehicle.id).strip()
+            if update.HasField("vehicle")
+            else bus_info.get("vehicle_id")
+        )
+
+        # Exclude synthetic schedule-based vehicles to prevent zero-delay bias
+        if vehicle_id and "_schedBasedVehicle" in vehicle_id:
+            continue
+
+        # Query TomTom on actual bus coordinates (falls back to empty if no GPS)
+        traffic_data = get_traffic_for_coordinate(session, bus_lat, bus_lon)
+
+        for stop_update in update.stop_time_update:
+            stop_id = str(stop_update.stop_id).strip()
+            stop_sequence = (
+                str(stop_update.stop_sequence).strip()
+                if stop_update.stop_sequence is not None
+                else None
+            )
+
+            arrival_delay_sec = (
+                int(stop_update.arrival.delay)
+                if stop_update.HasField("arrival")
+                else None
+            )
+            departure_delay_sec = (
+                int(stop_update.departure.delay)
+                if stop_update.HasField("departure")
+                else None
+            )
+
+            # Downstream delay propagation prefers departure delay
+            effective_delay_sec = (
+                departure_delay_sec
+                if departure_delay_sec is not None
+                else arrival_delay_sec
+            )
+
+            key = (trip_id, stop_id, stop_sequence)
+            static = schedule_lookup.get(key)
+            if not static:
+                static = stops_dict.get(stop_id, {})
+
+            stop_lat = static.get("stop_lat")
+            stop_lon = static.get("stop_lon")
+
+            # Route 10 corridor segment & weather (reference location defaults to bus location, else stop)
+            corridor = find_nearest_corridor(bus_lat or stop_lat, bus_lon or stop_lon)
+            weather = get_current_weather(session, corridor)
+
+            rows.append({
+                "observed_at_utc": observed_at_utc.isoformat(),
+                "feed_timestamp_epoch": int(feed.header.timestamp),
+                "route_id": str(ROUTE_ID),
+                "route_short_name": str(static.get("route_short_name", "10")),
+                "trip_id": str(trip_id) if trip_id is not None else None,
+                "trip_headsign": str(static.get("trip_headsign")) if static.get("trip_headsign") is not None else None,
+                "direction_id": str(static.get("direction_id")) if static.get("direction_id") is not None else None,
+                "vehicle_id": str(vehicle_id) if vehicle_id is not None else None,
+                "bus_lat": float(bus_lat) if bus_lat is not None and not math.isnan(bus_lat) else None,
+                "bus_lon": float(bus_lon) if bus_lon is not None and not math.isnan(bus_lon) else None,
+                "bus_bearing": float(bus_bearing) if bus_bearing is not None and not math.isnan(bus_bearing) else None,
+                "stop_id": str(stop_id) if stop_id is not None else None,
+                "stop_sequence": str(stop_sequence) if stop_sequence is not None else None,
+                "stop_name": str(static.get("stop_name")) if static.get("stop_name") is not None else None,
+                "stop_lat": float(stop_lat) if stop_lat is not None and not math.isnan(stop_lat) else None,
+                "stop_lon": float(stop_lon) if stop_lon is not None and not math.isnan(stop_lon) else None,
+                "scheduled_arrival": str(static.get("scheduled_arrival")) if static.get("scheduled_arrival") is not None else None,
+                "scheduled_departure": str(static.get("scheduled_departure")) if static.get("scheduled_departure") is not None else None,
+                "arrival_delay_sec": arrival_delay_sec,
+                "departure_delay_sec": departure_delay_sec,
+                "effective_delay_sec": effective_delay_sec,
+                "corridor_segment": str(corridor),
+                "traffic_current_speed_mph": traffic_data.get("current_speed_mph"),
+                "traffic_free_flow_speed_mph": traffic_data.get("free_flow_speed_mph"),
+                "traffic_jam_factor": traffic_data.get("jam_factor"),
+                "traffic_road_closure": bool(traffic_data.get("road_closure", False)),
+                "weather_temp_f": weather.get("weather_temp_f"),
+                "weather_precip_in": weather.get("weather_precip_in"),
+                "weather_snowfall_in": weather.get("weather_snowfall_in"),
+                "weather_code": int(weather["weather_code"]) if weather.get("weather_code") is not None else None,
+                "weather_wind_mph": weather.get("weather_wind_mph"),
+            })
+
+    return rows
+
+
+def write_parquet(rows, write_time_utc):
+    if not rows:
+        print("No real-time Route 10 records to write in this batch.")
+        return
+
+    service_date = write_time_utc.strftime("%Y-%m-%d")
+    hour = write_time_utc.strftime("%H")
+
+    partition_dir = (
+        OUTPUT_DIR
+        / f"route_id={ROUTE_ID}"
+        / f"service_date={service_date}"
+        / f"hour={hour}"
+    )
+    partition_dir.mkdir(parents=True, exist_ok=True)
+
+    file_name = write_time_utc.strftime("trip_updates_enriched_%Y%m%d_%H%M%S.parquet")
+    output_path = partition_dir / file_name
+
+    df = pd.DataFrame(rows)
+
+    string_cols = [
+        "observed_at_utc", "route_id", "route_short_name", "trip_id",
+        "trip_headsign", "direction_id", "vehicle_id", "stop_id",
+        "stop_sequence", "stop_name", "scheduled_arrival", "scheduled_departure",
+        "corridor_segment"
+    ]
+    for col in string_cols:
+        if col in df.columns:
+            df[col] = df[col].astype("string")
+
+    int_cols = [
+        "feed_timestamp_epoch", "arrival_delay_sec", "departure_delay_sec",
+        "effective_delay_sec", "weather_code"
+    ]
+    for col in int_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    float_cols = [
+        "bus_lat", "bus_lon", "bus_bearing", "stop_lat", "stop_lon",
+        "traffic_current_speed_mph", "traffic_free_flow_speed_mph",
+        "traffic_jam_factor", "weather_temp_f", "weather_precip_in",
+        "weather_snowfall_in", "weather_wind_mph"
+    ]
+    for col in float_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+
+    if "traffic_road_closure" in df.columns:
+        df["traffic_road_closure"] = df["traffic_road_closure"].astype("boolean")
+
+    table = pa.Table.from_pandas(df, schema=ENRICHED_SCHEMA, preserve_index=False)
+    pq.write_table(table, output_path, compression="zstd")
+
+    print(f"Wrote {len(df):,} enriched records to {output_path.relative_to(PROJECT_DIR)}")
+
+
+def main():
+    print("Loading static Route 10 schedule & stop lookups from DuckDB...")
+    schedule_lookup, stops_dict = get_static_lookups()
+    print(f"Loaded {len(schedule_lookup):,} schedule keys and {len(stops_dict):,} physical stops.")
+
+    if not TOMTOM_API_KEY:
+        print("[WARNING] TOMTOM_API_KEY environment variable is not set. Traffic data will be empty.")
+    else:
+        print("TomTom API integration active (Spatial-Grid Caching enabled).")
+
+    print(f"Polling GTFS-RT every {POLL_SECONDS}s. Writing Parquet every {WRITE_EVERY_SECONDS // 60}m.")
+    print("Press Control + C to stop safely.\n")
+
+    session = requests.Session()
+    batch_rows = []
+    last_write_time = time.monotonic()
+
+    try:
+        while True:
+            observed_at_utc = datetime.now(timezone.utc)
+
+            try:
+                response = session.get(TRIP_UPDATES_URL, timeout=30)
+                response.raise_for_status()
+
+                feed = gtfs_realtime_pb2.FeedMessage()
+                feed.ParseFromString(response.content)
+
+                snapshot_rows = parse_route_10_updates(
+                    feed=feed,
+                    observed_at_utc=observed_at_utc,
+                    schedule_lookup=schedule_lookup,
+                    stops_dict=stops_dict,
+                    session=session,
+                )
+
+                batch_rows.extend(snapshot_rows)
+
+                print(
+                    f"{observed_at_utc.isoformat()} | Captured {len(snapshot_rows):,} Route 10 stop records | Queue: {len(batch_rows):,}"
+                )
+
+            except requests.RequestException as error:
+                print(f"{observed_at_utc.isoformat()} | Request error: {error}")
+
+            if time.monotonic() - last_write_time >= WRITE_EVERY_SECONDS:
+                write_parquet(batch_rows, datetime.now(timezone.utc))
+                batch_rows = []
+                last_write_time = time.monotonic()
+
+            time.sleep(POLL_SECONDS)
+
+    except KeyboardInterrupt:
+        print("\nStopping collector...")
+        if batch_rows:
+            write_parquet(batch_rows, datetime.now(timezone.utc))
+        print("Collector stopped safely.")
+
+
+if __name__ == "__main__":
+    main()
