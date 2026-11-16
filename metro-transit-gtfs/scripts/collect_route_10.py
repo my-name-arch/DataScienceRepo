@@ -3,7 +3,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-
+import pandas as pd
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
