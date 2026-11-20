@@ -1,0 +1,6 @@
+
+.DS_Store
+metro-transit-gtfs/collector.log
+metro-transit-gtfs/data/
+*.parquet
+*.duckdb*
